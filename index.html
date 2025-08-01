@@ -1,0 +1,195 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Virtual Lipstick Try-On App</title>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.0" crossorigin="anonymous"></script>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    body { background-color: #f3f4f6; }
+    #output_canvas { display: block; margin: 0 auto; }
+    #photo_canvas { display: none; }
+    .title-text { color: rgba(255, 0, 0, 0.7); font-size: 1.5rem; font-weight: bold; margin-bottom: 1rem; }
+  </style>
+</head>
+<body class="flex flex-col items-center justify-center min-h-screen">
+  <h1 class="title-text">The Perfect Red</h1>
+  <video id="webcam" autoplay playsinline style="display: none;"></video>
+  <canvas id="output_canvas" width="1280" height="720" class="rounded-lg shadow-lg mb-4"></canvas>
+  <canvas id="photo_canvas" width="1280" height="720"></canvas>
+  <div class="flex space-x-4 mb-4">
+    <select id="lipstick_select" class="p-2 border rounded">
+      <option value="">No Lipstick</option>
+      <option value="rgba(165,42,42,0.8)">MAC Ruby Woo</option>
+      <option value="rgba(153,0,0,0.8)">Revlon Really Red</option>
+      <option value="rgba(187,10,33,0.8)">NARS Cruella</option>
+      <option value="rgba(199,21,133,0.8)">Maybelline Superstay Ruby</option>
+      <option value="rgba(139,0,0,0.8)">Dior Rouge</option>
+      <option value="rgba(200,16,46,0.8)">Chanel Rouge Coco Flash</option>
+      <option value="rgba(170,0,0,0.8)">YSL Rouge Pur Couture</option>
+      <option value="rgba(188,0,45,0.8)">Tom Ford Cherry Lush</option>
+    </select>
+    <label>Brightness: <input id="brightness_slider" type="range" min="0" max="200" value="100" class="w-32"></label>
+    <button id="capture_button" class="bg-green-500 text-white px-4 py-2 rounded">Capture Photo</button>
+  </div>
+  <script type="module">
+    import { FaceLandmarker, FilesetResolver } from 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.0';
+    let faceLandmarker;
+    const video = document.getElementById("webcam");
+    const canvasElement = document.getElementById("output_canvas");
+    const photoCanvas = document.getElementById("photo_canvas");
+    const canvasCtx = canvasElement.getContext("2d");
+    const photoCtx = photoCanvas.getContext("2d");
+    const lipstickSelect = document.getElementById("lipstick_select");
+    const brightnessSlider = document.getElementById("brightness_slider");
+    const captureButton = document.getElementById("capture_button");
+    let lipstickColor = "";
+    let brightness = 1.0;
+
+    // Outer lip landmarks for full coverage and natural look
+    const upperLip = [61, 185, 40, 39, 37, 0, 267, 269, 270, 409, 291];
+    const lowerLip = [146, 91, 181, 84, 17, 314, 405, 321, 375, 291, 308, 324, 318, 402, 317, 14, 87, 178, 88, 95];
+
+    async function createModels() {
+      try {
+        const vision = await FilesetResolver.forVisionTasks("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.0/wasm");
+        faceLandmarker = await FaceLandmarker.createFromOptions(vision, {
+          baseOptions: { modelAssetPath: `https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task` },
+          runningMode: "VIDEO", numFaces: 1
+        });
+      } catch (err) {
+        console.error("Model initialization failed:", err);
+        alert("Failed to load vision models. Please refresh and try again.");
+      }
+    }
+
+    async function enableCam() {
+      try {
+        if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+          throw new Error("Camera API not supported in this browser.");
+        }
+        const constraints = { 
+          video: { 
+            facingMode: "user", 
+            width: { ideal: 1280, max: 1920 }, 
+            height: { ideal: 720, max: 1080 } 
+          } 
+        };
+        const stream = await navigator.mediaDevices.getUserMedia(constraints);
+        video.srcObject = stream;
+        await video.play(); // Explicitly play the video
+        video.onloadedmetadata = () => {
+          console.log("Camera stream loaded:", video.videoWidth, video.videoHeight);
+          predictWebcam();
+        };
+      } catch (err) {
+        console.error("Camera access failed:", err.name, err.message);
+        alert("Unable to access camera. Please ensure camera permissions are granted, the site is served over HTTPS, and no other app is using the camera. Error: " + err.message);
+      }
+    }
+
+    async function predictWebcam() {
+      if (!video.srcObject || video.paused || video.ended) {
+        console.warn("Video stream not active, skipping frame");
+        requestAnimationFrame(predictWebcam);
+        return;
+      }
+      
+      canvasElement.style.width = video.videoWidth + "px";
+      canvasElement.style.height = video.videoHeight + "px";
+      canvasElement.width = video.videoWidth;
+      canvasElement.height = video.videoHeight;
+
+      const nowInMs = performance.now();
+      const faceResult = await faceLandmarker.detectForVideo(video, nowInMs);
+
+      applyEffects(faceResult);
+
+      requestAnimationFrame(predictWebcam);
+    }
+
+    function applyEffects(faceResult) {
+      canvasCtx.save();
+      canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
+
+      // Draw camera feed with brightness adjustment
+      const tempCanvas = document.createElement('canvas');
+      tempCanvas.width = canvasElement.width;
+      tempCanvas.height = canvasElement.height;
+      const tempCtx = tempCanvas.getContext('2d');
+      tempCtx.drawImage(video, 0, 0, tempCanvas.width, tempCanvas.height);
+      const imageData = tempCtx.getImageData(0, 0, tempCanvas.width, tempCanvas.height);
+      const data = imageData.data;
+      for (let i = 0; i < data.length; i += 4) {
+        for (let j = 0; j < 3; j++) {
+          data[i + j] = Math.min(255, Math.max(0, 255 * Math.pow(data[i + j] / 255, 1 / brightness)));
+        }
+      }
+      tempCtx.putImageData(imageData, 0, 0);
+      canvasCtx.drawImage(tempCanvas, 0, 0);
+
+      // Apply lipstick with smooth tracking
+      if (lipstickColor && faceResult.faceLandmarks && faceResult.faceLandmarks.length > 0) {
+        const landmarks = faceResult.faceLandmarks[0];
+        canvasCtx.fillStyle = lipstickColor;
+        canvasCtx.globalAlpha = 0.8;
+
+        // Upper lip
+        canvasCtx.beginPath();
+        upperLip.forEach((idx, i) => {
+          const {x, y} = landmarks[idx];
+          const px = x * canvasElement.width;
+          const py = y * canvasElement.height;
+          if (i === 0) canvasCtx.moveTo(px, py);
+          else if (i === 1) canvasCtx.quadraticCurveTo(px, py, px, py);
+          else canvasCtx.quadraticCurveTo(
+            (px + landmarks[upperLip[i-1]].x * canvasElement.width) / 2,
+            (py + landmarks[upperLip[i-1]].y * canvasElement.height) / 2,
+            px, py
+          );
+        });
+        canvasCtx.closePath();
+        canvasCtx.fill();
+
+        // Lower lip
+        canvasCtx.beginPath();
+        lowerLip.forEach((idx, i) => {
+          const {x, y} = landmarks[idx];
+          const px = x * canvasElement.width;
+          const py = y * canvasElement.height;
+          if (i === 0) canvasCtx.moveTo(px, py);
+          else if (i === 1) canvasCtx.quadraticCurveTo(px, py, px, py);
+          else canvasCtx.quadraticCurveTo(
+            (px + landmarks[lowerLip[i-1]].x * canvasElement.width) / 2,
+            (py + landmarks[lowerLip[i-1]].y * canvasElement.height) / 2,
+            px, py
+          );
+        });
+        canvasCtx.closePath();
+        canvasCtx.fill();
+
+        canvasCtx.globalAlpha = 1.0;
+      }
+
+      canvasCtx.restore();
+    }
+
+    function capturePhoto() {
+      photoCanvas.width = canvasElement.width;
+      photoCanvas.height = canvasElement.height;
+      photoCtx.drawImage(canvasElement, 0, 0);
+      const dataUrl = photoCanvas.toDataURL("image/png");
+      const link = document.createElement("a");
+      link.download = `lipstick_tryon_${new Date().toISOString()}.png`;
+      link.href = dataUrl;
+      link.click();
+    }
+
+    lipstickSelect.addEventListener("change", (e) => { lipstickColor = e.target.value; });
+    brightnessSlider.addEventListener("input", (e) => { brightness = e.target.value / 100 || 1; });
+    captureButton.addEventListener("click", capturePhoto);
+
+    (async () => {
+      await createModels();
+      await enable
